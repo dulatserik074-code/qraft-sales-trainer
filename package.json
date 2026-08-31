@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
-    "start": "wrangler dev --config dist/server/wrangler.json",
-    "start:render": "wrangler dev --config dist/server/wrangler.json --ip 0.0.0.0 --port $PORT",
+    "start": "vinext start",
+    "start:render": "vinext start",
     "lint": "oxlint",
     "format": "oxfmt",
     "typecheck": "tsc --noEmit",
