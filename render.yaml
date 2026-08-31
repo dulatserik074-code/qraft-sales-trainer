@@ -3,10 +3,12 @@ services:
     name: qraft-sales-trainer
     runtime: node
     plan: free
+    autoDeployTrigger: checksPass
     buildCommand: npm ci && npm run build
-    startCommand: npm run start:render
-    healthCheckPath: /
-    autoDeployTrigger: commit
+    startCommand: npm start
+    healthCheckPath: /healthz
     envVars:
       - key: NODE_VERSION
-        value: 22.19.0
+        value: 22.13.0
+      - key: NEXT_PUBLIC_AI_PROVIDER
+        value: gemini

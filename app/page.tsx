@@ -11,6 +11,7 @@ import {
   FileUp,
   Gauge,
   Languages,
+  LoaderCircle,
   Menu,
   MessageCircle,
   Moon,
@@ -25,6 +26,7 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import { GatewayProvider } from '@/lib/ai-provider';
 import { demoProducts } from '@/lib/demo-data';
 import {
   evaluateSession,
@@ -58,19 +60,52 @@ const initial: ChatMessage = {
   text: 'Добрый день. Ищу тормозные колодки для сервиса, но у конкурента дешевле. Что можете предложить?',
   at: Date.now(),
 };
+
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, '');
+const gatewayEndpoint =
+  process.env.NEXT_PUBLIC_AI_GATEWAY_URL ||
+  (supabaseUrl ? `${supabaseUrl}/functions/v1/ai-gateway` : '');
+const gatewayToken = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
+const cloudProviderName =
+  process.env.NEXT_PUBLIC_AI_PROVIDER === 'openrouter'
+    ? 'openrouter'
+    : 'gemini';
+const cloudAI =
+  gatewayEndpoint && gatewayToken
+    ? new GatewayProvider({
+        endpoint: gatewayEndpoint,
+        accessToken: gatewayToken,
+        provider: cloudProviderName,
+      })
+    : null;
+
 export default function Home() {
   const [view, setView] = useState<View>('dashboard');
   const [menu, setMenu] = useState(false);
   const [dark, setDark] = useState(false);
-  const [lang, setLang] = useState('RU');
   const [msgs, setMsgs] = useState<ChatMessage[]>([initial]);
   const [draft, setDraft] = useState('');
   const [turn, setTurn] = useState(1);
   const [toast, setToast] = useState('');
+  const [catalogQuery, setCatalogQuery] = useState('');
+  const [sending, setSending] = useState(false);
+  const [aiMode, setAiMode] = useState<'scenario' | 'cloud' | 'fallback'>(
+    'scenario',
+  );
   useEffect(() => {
     document.documentElement.classList.toggle('dark', dark);
   }, [dark]);
   const result = useMemo(() => evaluateSession(msgs), [msgs]);
+  const filteredProducts = useMemo(() => {
+    const query = catalogQuery.trim().toLowerCase();
+    if (!query) return demoProducts;
+    return demoProducts.filter((product) =>
+      [product.name, product.sku, product.category]
+        .join(' ')
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [catalogQuery]);
   const notice = (s: string) => {
     setToast(s);
     setTimeout(() => setToast(''), 2200);
@@ -78,20 +113,72 @@ export default function Home() {
   const start = () => {
     setMsgs([{ ...initial, at: Date.now() }]);
     setTurn(1);
+    setAiMode('scenario');
     setView('training');
   };
-  const send = () => {
-    if (!draft.trim()) return;
+  const send = async () => {
+    if (!draft.trim() || sending) return;
     const s: ChatMessage = {
       role: 'seller',
       text: draft.trim(),
       at: Date.now(),
     };
     const next = [...msgs, s];
-    const b = generateBuyerTurn(next, turn);
-    setMsgs([...next, b]);
+    setMsgs(next);
     setDraft('');
-    setTurn(turn + 1);
+    setSending(true);
+
+    let buyer = generateBuyerTurn(next, turn);
+    if (cloudAI) {
+      try {
+        const cloudTurn = await cloudAI.generateBuyerTurn({
+          language: 'ru',
+          turn,
+          messages: next.map(({ role, text }) => ({ role, text })),
+          scenario: {
+            buyer: 'Владелец автосервиса Андрей',
+            goal: 'Выяснить потребность и договориться о тестовой поставке',
+            product: {
+              name: 'Колодки QF-Brake Pro',
+              priceFrom: 3250,
+              currency: 'RUB',
+              minimumOrder: 4,
+            },
+          },
+        });
+        buyer = {
+          role: 'buyer',
+          text: cloudTurn.publicMessage,
+          at: Date.now(),
+          shouldEnd: cloudTurn.shouldEnd,
+        };
+        setAiMode('cloud');
+      } catch {
+        setAiMode('fallback');
+        notice('Облачный ИИ недоступен — разговор продолжен офлайн.');
+      }
+    }
+
+    setMsgs([...next, buyer]);
+    setTurn((current) => current + 1);
+    setSending(false);
+  };
+
+  const checkCloudAI = async () => {
+    if (!cloudAI) {
+      notice('Добавьте публичные настройки Supabase в переменные окружения.');
+      return;
+    }
+    try {
+      const status = await cloudAI.healthCheck();
+      notice(
+        status.available
+          ? `${cloudProviderName === 'gemini' ? 'Gemini' : 'OpenRouter'} готов к работе`
+          : 'Провайдер не настроен в Supabase',
+      );
+    } catch {
+      notice('Не удалось связаться с AI-шлюзом');
+    }
   };
   return (
     <main className="min-h-screen bg-[#f4f7fb] text-slate-900 dark:bg-[#08111f] dark:text-slate-100">
@@ -110,7 +197,11 @@ export default function Home() {
               Qraft <i className="not-italic text-emerald-300">Sales</i>
             </b>
           </button>
-          <button className="lg:hidden" onClick={() => setMenu(false)}>
+          <button
+            aria-label="Закрыть меню"
+            className="lg:hidden"
+            onClick={() => setMenu(false)}
+          >
             <X />
           </button>
         </div>
@@ -147,7 +238,11 @@ export default function Home() {
       <div className="min-w-0 lg:pl-64">
         <header className="sticky top-0 z-30 flex h-18 items-center justify-between border-b bg-white/90 px-4 backdrop-blur dark:bg-[#0b1728]/90 sm:px-7">
           <div className="flex items-center gap-3">
-            <button className="lg:hidden" onClick={() => setMenu(true)}>
+            <button
+              aria-label="Открыть меню"
+              className="lg:hidden"
+              onClick={() => setMenu(true)}
+            >
               <Menu />
             </button>
             <div>
@@ -159,15 +254,19 @@ export default function Home() {
           </div>
           <div className="flex gap-2">
             <button
+              aria-label="Язык интерфейса"
               onClick={() =>
-                setLang(lang === 'RU' ? 'KZ' : lang === 'KZ' ? 'EN' : 'RU')
+                notice('KZ и EN находятся в roadmap. Текущая версия — RU.')
               }
               className="flex items-center gap-1 rounded-lg border px-2.5 py-2 text-xs font-bold"
             >
               <Languages size={15} />
-              {lang}
+              RU
             </button>
             <button
+              aria-label={
+                dark ? 'Включить светлую тему' : 'Включить тёмную тему'
+              }
               onClick={() => setDark(!dark)}
               className="rounded-lg border p-2"
             >
@@ -348,8 +447,16 @@ export default function Home() {
         <div className="grid min-h-[680px] overflow-hidden rounded-2xl border bg-white dark:bg-[#0e1c2e] lg:grid-cols-[1fr_290px]">
           <div className="flex flex-col">
             <div className="border-b p-4">
-              <b>Андрей • сценарный ИИ</b>
-              <p className="text-xs text-emerald-600">в сети</p>
+              <b>
+                Андрей • {aiMode === 'cloud' ? 'облачный ИИ' : 'сценарный ИИ'}
+              </b>
+              <p className="text-xs text-emerald-600">
+                {sending
+                  ? 'печатает…'
+                  : aiMode === 'fallback'
+                    ? 'офлайн-резерв'
+                    : 'в сети'}
+              </p>
             </div>
             <div className="flex-1 space-y-4 overflow-y-auto bg-slate-50 p-4 dark:bg-[#091625]">
               {msgs.map((m, i) => (
@@ -389,17 +496,24 @@ export default function Home() {
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
-                      send();
+                      void send();
                     }
                   }}
+                  disabled={sending}
                   className="min-h-12 flex-1 resize-none rounded-xl border bg-transparent p-3 text-sm"
                   placeholder="Ответ покупателю…"
                 />
                 <button
-                  onClick={send}
-                  className="grid size-12 place-items-center rounded-xl bg-emerald-400 text-[#071b33]"
+                  onClick={() => void send()}
+                  disabled={sending || !draft.trim()}
+                  aria-label="Отправить ответ"
+                  className="grid size-12 place-items-center rounded-xl bg-emerald-400 text-[#071b33] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <Send size={19} />
+                  {sending ? (
+                    <LoaderCircle className="animate-spin" size={19} />
+                  ) : (
+                    <Send size={19} />
+                  )}
                 </button>
               </div>
             </div>
@@ -512,22 +626,17 @@ export default function Home() {
           sub="Демо-каталог оптового поставщика"
           action={
             <div className="flex gap-2">
-              <label className="cursor-pointer rounded-xl border px-4 py-2 text-sm font-bold">
+              <span className="cursor-not-allowed rounded-xl border px-4 py-2 text-sm font-bold opacity-60">
                 <FileUp className="mr-1 inline" size={16} />
-                Импорт
-                <input
-                  type="file"
-                  className="hidden"
-                  accept=".csv,.xlsx"
-                  onChange={() => notice('6 строк готовы к импорту')}
-                />
-              </label>
+                Импорт — roadmap
+              </span>
               <button
-                onClick={() => notice('Форма товара открыта')}
-                className="rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white"
+                disabled
+                title="Добавление товаров появится после подключения Supabase"
+                className="cursor-not-allowed rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white opacity-60"
               >
                 <Plus className="mr-1 inline" size={16} />
-                Товар
+                Товар — roadmap
               </button>
             </div>
           }
@@ -535,6 +644,8 @@ export default function Home() {
         <div className="mb-4 flex items-center gap-2 rounded-xl border bg-white px-3 dark:bg-[#0e1c2e]">
           <Search size={17} />
           <input
+            value={catalogQuery}
+            onChange={(event) => setCatalogQuery(event.target.value)}
             className="w-full bg-transparent py-3 text-sm outline-none"
             placeholder="Поиск по SKU или названию"
           />
@@ -553,7 +664,7 @@ export default function Home() {
               </tr>
             </thead>
             <tbody>
-              {demoProducts.map((p) => (
+              {filteredProducts.map((p) => (
                 <tr key={p.sku} className="border-t">
                   <td className="px-4 py-4 font-semibold">{p.name}</td>
                   <td className="px-4 font-mono text-xs">{p.sku}</td>
@@ -569,6 +680,16 @@ export default function Home() {
                   </td>
                 </tr>
               ))}
+              {filteredProducts.length === 0 && (
+                <tr>
+                  <td
+                    className="px-4 py-8 text-center text-slate-500"
+                    colSpan={6}
+                  >
+                    Ничего не найдено
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -583,11 +704,12 @@ export default function Home() {
           sub="Практика конкретных навыков"
           action={
             <button
-              onClick={() => notice('Сценарий создан из каталога')}
-              className="rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white"
+              disabled
+              title="Конструктор сценариев находится в roadmap"
+              className="cursor-not-allowed rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white opacity-60"
             >
               <Plus className="mr-1 inline" size={16} />
-              Создать
+              Создать — roadmap
             </button>
           }
         />
@@ -611,10 +733,11 @@ export default function Home() {
                 {i > 2 ? 'Сложный' : 'Стандартный'}
               </p>
               <button
-                onClick={start}
-                className="mt-5 flex items-center text-sm font-bold text-blue-700"
+                onClick={i === 0 ? start : undefined}
+                disabled={i !== 0}
+                className="mt-5 flex items-center text-sm font-bold text-blue-700 disabled:cursor-not-allowed disabled:text-slate-400"
               >
-                Запустить <ChevronRight size={16} />
+                {i === 0 ? 'Запустить' : 'Roadmap'} <ChevronRight size={16} />
               </button>
             </div>
           ))}
@@ -675,6 +798,10 @@ export default function Home() {
     return (
       <>
         <Head title="Аналитика обучения" sub="Динамика за 8 недель" />
+        <p className="-mt-3 mb-5 text-xs text-slate-500">
+          Ниже показаны демонстрационные данные. История появится после
+          подключения Supabase.
+        </p>
         <div className="grid gap-5 lg:grid-cols-[1.2fr_.8fr]">
           <div className="rounded-2xl border bg-white p-5 dark:bg-[#0e1c2e]">
             <h3 className="font-bold">Средний балл</h3>
@@ -724,14 +851,15 @@ export default function Home() {
       <>
         <Head
           title="Команда продаж"
-          sub="Результаты и назначения"
+          sub="Демонстрационные результаты и назначения"
           action={
             <button
-              onClick={() => notice('Ссылка-приглашение скопирована')}
-              className="rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white"
+              disabled
+              title="Приглашения появятся после подключения Supabase Auth"
+              className="cursor-not-allowed rounded-xl bg-[#173e6a] px-4 py-2 text-sm font-bold text-white opacity-60"
             >
               <Plus className="mr-1 inline" size={16} />
-              Пригласить
+              Пригласить — roadmap
             </button>
           }
         />
@@ -792,15 +920,37 @@ export default function Home() {
           ))}
         </div>
         <button
-          onClick={() => notice('Правила сохранены')}
-          className="mt-5 rounded-xl bg-emerald-400 px-5 py-3 font-bold text-[#071b33]"
+          disabled
+          title="Сохранение появится после подключения Supabase"
+          className="mt-5 cursor-not-allowed rounded-xl bg-emerald-400 px-5 py-3 font-bold text-[#071b33] opacity-60"
         >
-          Сохранить
+          Сохранение — roadmap
         </button>
       </>
     );
   }
   function AI() {
+    const configuredName =
+      cloudProviderName === 'gemini' ? 'Gemini' : 'OpenRouter';
+    const cards = [
+      ['Сценарный движок', 'Подключён', 'Работает офлайн'],
+      [
+        'Gemini',
+        cloudAI && cloudProviderName === 'gemini' ? 'Настроен' : 'Не настроен',
+        'Supabase Edge Function',
+      ],
+      [
+        'OpenRouter',
+        cloudAI && cloudProviderName === 'openrouter'
+          ? 'Настроен'
+          : 'Не настроен',
+        'Free router / :free',
+      ],
+      ['Cloudflare AI', 'Roadmap', 'Серверный адаптер'],
+      ['Ollama', 'Roadmap', 'Локальный сервер'],
+      ['WebLLM', 'Roadmap', 'Требуется WebGPU'],
+    ];
+
     return (
       <>
         <Head
@@ -812,14 +962,7 @@ export default function Home() {
           чувствительных данных используйте Ollama или WebLLM.
         </div>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {[
-            ['Сценарный движок', 'Подключён', 'Офлайн'],
-            ['Gemini', 'Не настроен', 'Edge Function'],
-            ['OpenRouter', 'Не настроен', 'Free router / :free'],
-            ['Cloudflare AI', 'Не настроен', 'REST API'],
-            ['Ollama', 'Не настроен', 'Локальный прокси'],
-            ['WebLLM', 'Недоступен', 'Требуется WebGPU'],
-          ].map((x, i) => (
+          {cards.map((x, i) => (
             <div
               className={`rounded-2xl border bg-white p-5 dark:bg-[#0e1c2e] ${i === 0 ? 'border-emerald-400' : ''}`}
               key={x[0]}
@@ -835,13 +978,13 @@ export default function Home() {
               <h3 className="mt-4 font-bold">{x[0]}</h3>
               <p className="text-sm text-slate-500">{x[2]}</p>
               <button
-                onClick={() =>
-                  notice(
-                    i === 0
-                      ? 'Подключение исправно'
-                      : 'Добавьте серверную переменную окружения',
-                  )
-                }
+                onClick={() => {
+                  if (i === 0) notice('Офлайн-движок исправен');
+                  else if (x[0] === configuredName) void checkCloudAI();
+                  else if (x[1] === 'Roadmap')
+                    notice('Этот адаптер запланирован в roadmap');
+                  else notice('Выберите провайдера в переменных окружения');
+                }}
                 className="mt-4 rounded-lg border px-3 py-2 text-sm font-bold"
               >
                 Проверить
