@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: qraft-sales-trainer
+    runtime: node
+    plan: free
+    buildCommand: npm ci && npm run build
+    startCommand: npm run start:render
+    healthCheckPath: /
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22.19.0
