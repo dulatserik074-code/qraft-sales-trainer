@@ -29,6 +29,7 @@
     "dev": "vinext dev",
     "build": "vinext build",
     "start": "node server.mjs",
+    "start:render": "node server.mjs",
     "start:cloudflare": "wrangler dev --config dist/server/wrangler.json",
     "lint": "oxlint",
     "format": "oxfmt",

@@ -6,6 +6,7 @@
 - Made browser access to the AI gateway fail closed when `ALLOWED_ORIGINS` is missing or mismatched.
 - Prevented organization admins from modifying or granting the owner role.
 - Added an upgrade migration for existing Supabase installations.
+- Preserved the legacy Render start command for existing services.
 
 ## 0.2.0 — 2026-08-31
 
